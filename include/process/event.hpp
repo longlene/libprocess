@@ -1,18 +1,32 @@
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
+
 #ifndef __PROCESS_EVENT_HPP__
 #define __PROCESS_EVENT_HPP__
 
-#include <tr1/functional>
-#include <tr1/memory> // TODO(benh): Replace all shared_ptr with unique_ptr.
+#include <memory> // TODO(benh): Replace shared_ptr with unique_ptr.
 
 #include <process/future.hpp>
 #include <process/http.hpp>
 #include <process/message.hpp>
 #include <process/socket.hpp>
 
+#include <stout/abort.hpp>
+#include <stout/lambda.hpp>
+
 namespace process {
 
 // Forward declarations.
-struct ProcessBase;
+class ProcessBase;
 struct MessageEvent;
 struct DispatchEvent;
 struct HttpEvent;
@@ -23,11 +37,11 @@ struct TerminateEvent;
 struct EventVisitor
 {
   virtual ~EventVisitor() {}
-  virtual void visit(const MessageEvent& event) {}
-  virtual void visit(const DispatchEvent& event) {}
-  virtual void visit(const HttpEvent& event) {}
-  virtual void visit(const ExitedEvent& event) {}
-  virtual void visit(const TerminateEvent& event) {}
+  virtual void visit(const MessageEvent&) {}
+  virtual void visit(const DispatchEvent&) {}
+  virtual void visit(const HttpEvent&) {}
+  virtual void visit(const ExitedEvent&) {}
+  virtual void visit(const TerminateEvent&) {}
 };
 
 
@@ -43,8 +57,8 @@ struct Event
     bool result = false;
     struct IsVisitor : EventVisitor
     {
-      IsVisitor(bool* _result) : result(_result) {}
-      virtual void visit(const T& t) { *result = true; }
+      explicit IsVisitor(bool* _result) : result(_result) {}
+      virtual void visit(const T&) { *result = true; }
       bool* result;
     } visitor(&result);
     visit(&visitor);
@@ -54,17 +68,16 @@ struct Event
   template <typename T>
   const T& as() const
   {
-    const T* result = NULL;
+    const T* result = nullptr;
     struct AsVisitor : EventVisitor
     {
-      AsVisitor(const T** _result) : result(_result) {}
+      explicit AsVisitor(const T** _result) : result(_result) {}
       virtual void visit(const T& t) { *result = &t; }
       const T** result;
     } visitor(&result);
     visit(&visitor);
-    if (result == NULL) {
-      std::cerr << "Attempting to \"cast\" event incorrectly!" << std::endl;
-      abort();
+    if (result == nullptr) {
+      ABORT("Attempting to \"cast\" event incorrectly!");
     }
     return *result;
   }
@@ -73,8 +86,11 @@ struct Event
 
 struct MessageEvent : Event
 {
-  MessageEvent(Message* _message)
+  explicit MessageEvent(Message* _message)
     : message(_message) {}
+
+  MessageEvent(const MessageEvent& that)
+    : message(that.message == nullptr ? nullptr : new Message(*that.message)) {}
 
   virtual ~MessageEvent()
   {
@@ -89,20 +105,29 @@ struct MessageEvent : Event
   Message* const message;
 
 private:
-  // Not copyable, not assignable.
-  MessageEvent(const MessageEvent&);
-  MessageEvent& operator = (const MessageEvent&);
+  // Keep MessageEvent not assignable even though we made it
+  // copyable.
+  // Note that we are violating the "rule of three" here but it helps
+  // keep the fields const.
+  MessageEvent& operator=(const MessageEvent&);
 };
 
 
 struct HttpEvent : Event
 {
-  HttpEvent(const Socket& _socket, http::Request* _request)
-    : socket(_socket), request(_request) {}
+  HttpEvent(
+      http::Request* _request,
+      Promise<http::Response>* _response)
+    : request(_request),
+      response(_response) {}
 
   virtual ~HttpEvent()
   {
     delete request;
+
+    // Fail the response in case it wasn't set.
+    response->set(http::InternalServerError());
+    delete response;
   }
 
   virtual void visit(EventVisitor* visitor) const
@@ -110,13 +135,13 @@ struct HttpEvent : Event
     visitor->visit(*this);
   }
 
-  const Socket socket;
   http::Request* const request;
+  Promise<http::Response>* response;
 
 private:
   // Not copyable, not assignable.
   HttpEvent(const HttpEvent&);
-  HttpEvent& operator = (const HttpEvent&);
+  HttpEvent& operator=(const HttpEvent&);
 };
 
 
@@ -124,11 +149,11 @@ struct DispatchEvent : Event
 {
   DispatchEvent(
       const UPID& _pid,
-      const std::tr1::shared_ptr<std::tr1::function<void(ProcessBase*)> >& _f,
-      const std::string& _method)
+      const std::shared_ptr<lambda::function<void(ProcessBase*)>>& _f,
+      const Option<const std::type_info*>& _functionType)
     : pid(_pid),
       f(_f),
-      method(_method)
+      functionType(_functionType)
   {}
 
   virtual void visit(EventVisitor* visitor) const
@@ -140,26 +165,20 @@ struct DispatchEvent : Event
   const UPID pid;
 
   // Function to get invoked as a result of this dispatch event.
-  const std::tr1::shared_ptr<std::tr1::function<void(ProcessBase*)> > f;
+  const std::shared_ptr<lambda::function<void(ProcessBase*)>> f;
 
-  // Canonical "byte" representation of a pointer to a member function
-  // (i.e., method) encapsulated in the above function (or empty if
-  // not applicable). Note that we use a byte representation because a
-  // pointer to a member function is not actually a pointer, but
-  // instead a POD.
-  // TODO(benh): Perform canonicalization lazily.
-  const std::string method;
+  const Option<const std::type_info*> functionType;
 
 private:
   // Not copyable, not assignable.
   DispatchEvent(const DispatchEvent&);
-  DispatchEvent& operator = (const DispatchEvent&);
+  DispatchEvent& operator=(const DispatchEvent&);
 };
 
 
 struct ExitedEvent : Event
 {
-  ExitedEvent(const UPID& _pid)
+  explicit ExitedEvent(const UPID& _pid)
     : pid(_pid) {}
 
   virtual void visit(EventVisitor* visitor) const
@@ -170,15 +189,16 @@ struct ExitedEvent : Event
   const UPID pid;
 
 private:
-  // Not copyable, not assignable.
-  ExitedEvent(const ExitedEvent&);
-  ExitedEvent& operator = (const ExitedEvent&);
+  // Keep ExitedEvent not assignable even though we made it copyable.
+  // Note that we are violating the "rule of three" here but it helps
+  // keep the fields const.
+  ExitedEvent& operator=(const ExitedEvent&);
 };
 
 
 struct TerminateEvent : Event
 {
-  TerminateEvent(const UPID& _from)
+  explicit TerminateEvent(const UPID& _from)
     : from(_from) {}
 
   virtual void visit(EventVisitor* visitor) const
@@ -191,9 +211,9 @@ struct TerminateEvent : Event
 private:
   // Not copyable, not assignable.
   TerminateEvent(const TerminateEvent&);
-  TerminateEvent& operator = (const TerminateEvent&);
+  TerminateEvent& operator=(const TerminateEvent&);
 };
 
-} // namespace event {
+} // namespace process {
 
 #endif // __PROCESS_EVENT_HPP__

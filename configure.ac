@@ -1,117 +1,187 @@
-# Generated with autoscan, then modified appropriately.
+#                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
-AC_PREREQ([2.61])
+AC_PREREQ([2.69])
 AC_INIT([libprocess], [0.0.1])
-
-# Have autoconf setup some variables related to the system.
-AC_CANONICAL_HOST
-AC_CANONICAL_BUILD
-AC_CANONICAL_TARGET
 
 AC_LANG([C++])
 
+# Checks for programs.
+AC_PROG_CXX([g++])
+AC_PROG_CC([gcc])
+
+AX_COMPILER_VERSION
+AX_COMPILER_VENDOR
+
 AC_CONFIG_MACRO_DIR([m4])
 
-# Initialize automake.
-# -Wno-portability, since we require GNU Make for % patterns.
+
 AM_INIT_AUTOMAKE([-Wall -Werror -Wno-portability foreign])
 
-# Required for linking non-POSIX libs.
-m4_ifdef([AM_PROG_AR], [AM_PROG_AR])
-
-# Initialize libtool (LT_OUTPUT builds ./libtool immediately, needed
-# if we want to do tests with libtool during configuration).
 LT_PREREQ([2.2])
 LT_INIT
 LT_LANG([C++])
 LT_OUTPUT
 
-# The default CFLAGS/CXXFLAGS from autoconf when using gcc usually
-# includes "-O2". These really slow down compiling our tests, so we
-# turn them off and enable them (where desired) directly in the
-# Makefile. Note that this should not have an impact on users setting
-# CFLAGS/CXXFLAGS directly at configure time, or when running make.
-AS_IF([test "x${ac_cv_env_CFLAGS_set}" = "x"], [CFLAGS="-g"])
-AS_IF([test "x${ac_cv_env_CXXFLAGS_set}" = "x"], [CXXFLAGS="-g"])
+AX_CXX_COMPILE_STDCXX([11], [noext], [mandatory])
 
-# Save the configure arguments so we can pass them to any third-party
-# libraries that we might run configure on (see
-# 3rdparty/Makefile.am). One downside of our strategy for shipping
-# and building third-party libraries is that we can't expose options
-# from nested third-party configure scripts.
-CONFIGURE_ARGS="$ac_configure_args"
-AC_SUBST(CONFIGURE_ARGS)
+# Optional features
+AC_ARG_ENABLE([libevent],
+              AS_HELP_STRING([--enable-libevent],
+                             [use libevent instead of libev]),
+              [], [enable_libevent=no])
 
-AC_CONFIG_SUBDIRS([3rdparty/stout])
-
-AC_CONFIG_FILES([Makefile])
-AC_CONFIG_FILES([3rdparty/Makefile])
-
-AC_ARG_ENABLE([install],
-              AS_HELP_STRING([--enable-install],
-                             [install libprocess]),
-              [AC_MSG_ERROR([libprocess can not currently be installed])])
-
-AC_ARG_ENABLE([optimize],
-              AS_HELP_STRING([--disable-optimize],
-                             [don't try to compile with optimizations]),
-              [], [enable_optimize=yes])
-
-AC_ARG_ENABLE([perftools],
-              AS_HELP_STRING([--enable-perftools],
-                             [enable google perftools]),
-              [gperftools=yes])
-
-AC_ARG_WITH([zlib],
-            AS_HELP_STRING([--without-zlib],
-                           [disables zlib compression, which means the webui
-                            will be far less responsive; not recommended]),
-            [], [with_zlib=yes])
-
-# Do some OS specific setup.
-case "${target_os}" in
-  linux*)
-    LIBS="$LIBS -lrt" # For clock_gettime() in stout/stopwatch.hpp.
-    OS_NAME=linux # Used below for OS_LINUX.
-    ;;
-  *)
-    ;;
-esac
-
-# Checks for gcc toolchain (we rely on some atomic builtins for now).
-AC_PROG_CXX([g++])
-AC_PROG_CC([gcc])
-
-# Check for pthreads (uses m4/acx_pthread.m4).
-ACX_PTHREAD([], [AC_MSG_ERROR([failed to find pthreads])])
+AC_ARG_ENABLE([ssl],
+              AS_HELP_STRING([--enable-ssl],
+                             [use ssl for libprocess communication]),
+              [], [enable_ssl=no])
 
 
-# Check if we should try and enable optimizations.
-if test "x$enable_optimize" = "xyes"; then
-  # For now, we only turn on optimizations for gcc.
-  if test "x$GCC" = "xyes"; then
-    CXXFLAGS="$CXXFLAGS -g2 -O2"
-  fi
+# Checks for libraries.
+
+AC_CHECK_HEADERS([boost/version.hpp], [found_boost=yes])
+if test "x$found_boost" != "xyes"; then
+    AC_MSG_ERROR([cannot find Boost])
 fi
 
+AC_CHECK_HEADERS([glog/logging.h],
+                     [AC_LINK_IFELSE(
+                      [AC_LANG_PROGRAM([#include <glog/logging.h>], [])],
+                      [TEST_LIBS="$TEST_LIBS -lglog"] [found_glog=yes],
+                      [AC_MSG_WARN([glog is not installed.])])])
 
-# Check if we should/can build with libz.
-if test "x$with_zlib" = "xyes"; then
-  AC_CHECK_LIB([z], [deflate, gzread, gzwrite, inflate], [],
-               [AC_MSG_ERROR([cannot find libz
-  -------------------------------------------------------------------
-  This means HTTP responses will be slower because we cannot use
-  compression; you probably want to download and install zlib, but
-  you can get away without it by doing --without-zlib.
-  -------------------------------------------------------------------
+if test "x$found_glog" != "xyes"; then
+    AC_MSG_ERROR([cannot find glog])
+fi
+
+AC_CHECK_HEADER([gmock/gmock.h],
+                  [found_gmock=yes],
+                  [])
+if test "x$found_gmock" = "xyes"; then
+    if test "x$check_gtest" = "xyes"; then
+      AC_CHECK_LIB([gtest],
+                   [_init],
+                   [],
+                   [AC_MSG_ERROR([gtest missing])])
+    fi
+else
+    AC_MSG_ERROR([cannot find gmock])
+fi
+
+if test "x$enable_libevent" = "xyes"; then
+  AC_CHECK_HEADERS([event2/event.h],
+                   [AC_CHECK_LIB([event],
+                                 [event_base_new],
+                                 [],
+                                 [AC_MSG_ERROR([cannot find libevent
+-------------------------------------------------------------------
+libevent version 2+ is required for libprocess to build.
+-------------------------------------------------------------------
+                                 ])])],
+                   [AC_MSG_ERROR([cannot find libevent headers
+-------------------------------------------------------------------
+libevent version 2+ headers are required for libprocess to build.
+-------------------------------------------------------------------
+  ])])
+
+  AC_CHECK_HEADERS([event2/thread.h],
+                   [AC_CHECK_LIB([event_pthreads],
+                                 [evthread_use_pthreads],
+                                 [],
+                                 [AC_MSG_ERROR([cannot find libevent_pthreads
+-------------------------------------------------------------------
+libevent_pthreads version 2+ is required for libprocess to build.
+-------------------------------------------------------------------
+                                 ])])],
+                   [AC_MSG_ERROR([cannot find libevent_pthreads headers
+-------------------------------------------------------------------
+libevent_pthreads version 2+ headers are required for libprocess to build.
+-------------------------------------------------------------------
   ])])
 fi
 
-AM_CONDITIONAL([HAS_GPERFTOOLS], [test "x$gperftools" = "xyes"])
 
-# Used for conditionally building source files (e.g., only want to
-# build stout/tests/proc_tests.cpp on Linux).
-AM_CONDITIONAL([OS_LINUX], [test "x$OS_NAME" = "xlinux"])
+AM_CONDITIONAL([ENABLE_LIBEVENT], [test x"$enable_libevent" = "xyes"])
 
+
+AC_CHECK_HEADERS([google/protobuf/message.h], [found_protobuf=yes],
+                   [found_protobuf=no])
+
+if test "x$found_protobuf" = "xyes"; then
+    saved_LIBS="$LIBS"
+    LIBS="-lprotobuf $LIBS"
+    AC_LANG_PUSH([C++])
+    AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <google/protobuf/stubs/common.h>],
+                    [ google::protobuf::ShutdownProtobufLibrary(); ])],
+            [ found_protobuf=yes ],
+            [ found_protobuf=no ])
+    AC_LANG_POP()
+    LIBS="$saved_LIBS"
+fi
+
+if test "x$found_protobuf" != "xyes"; then
+    AC_MSG_ERROR([cannot find protobuf])
+fi
+
+AC_CHECK_HEADERS([ev.h], [found_libev=yes])
+
+if test "x$found_libev" = "xyes"; then
+    AC_MSG_WARN([libev found must have been built with -DEV_CHILD_ENABLE=0])
+else
+    AC_MSG_ERROR([cannot find libev
+-------------------------------------------------------------------
+You may want specify the location of libev by providing a prefix
+path via --with-libev=DIR, or check that the path you provided is
+correct if you're already doing this.
+-------------------------------------------------------------------
+])
+fi
+
+if test "x$enable_ssl" = "xyes"; then
+  AC_CHECK_HEADERS([openssl/ssl.h],
+                   [AC_CHECK_LIB([ssl],
+                                 [SSL_CTX_new],
+                                 [],
+                                 [AC_MSG_ERROR([cannot find libssl])])],
+                   [AC_MSG_ERROR([cannot find libssl headers ])])
+
+AC_CHECK_LIB([crypto], [RAND_poll], [], [AC_MSG_ERROR([cannot find libcrypto
+])])
+fi
+
+if test "x$enable_ssl" = "xyes"; then
+if test "x$enable_libevent" = "xyes"; then
+    AC_CHECK_HEADERS([event2/bufferevent_ssl.h],
+                     [AC_CHECK_LIB([event_openssl],
+                                   [bufferevent_openssl_get_ssl],
+                                   [],
+                                   [AC_MSG_ERROR([cannot find libevent_openssl
+-------------------------------------------------------------------
+libevent_openssl version 2+ is required for an SSL-enabled build.
+-------------------------------------------------------------------
+                                   ])])],
+                     [AC_MSG_ERROR([cannot find libevent_openssl headers
+-------------------------------------------------------------------
+libevent_openssl version 2+ headers are required for an SSL-enabled build.
+-------------------------------------------------------------------
+])])
+else
+    AC_MSG_ERROR([SSL is currently only supported with libevent])
+fi
+fi
+
+AM_CONDITIONAL([ENABLE_SSL], [test x"$enable_ssl" = "xyes"])
+
+
+AC_CHECK_HEADERS([stout/try.hpp], [found_stout=yes])
+
+if test "x$found_stout" != "xyes"; then
+    AC_MSG_ERROR([cannot find stout])
+fi
+
+
+AC_CONFIG_FILES([Makefile
+                 include/Makefile
+                 src/Makefile])
 AC_OUTPUT
+
