@@ -4,7 +4,7 @@ if !ENABLE_LIBEVENT
 LIB_EV = -lev
 endif
 
-noinst_LTLIBRARIES = libprocess.la
+lib_LTLIBRARIES = libprocess.la
 
 libprocess_la_CPPFLAGS = \
  -I$(top_srcdir)/include \
